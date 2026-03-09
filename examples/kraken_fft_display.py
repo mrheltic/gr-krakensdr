@@ -6,36 +6,23 @@
 #
 # GNU Radio Python Flow Graph
 # Title: Not titled yet
-# GNU Radio version: 3.10.3.0
-
-from packaging.version import Version as StrictVersion
-
-if __name__ == '__main__':
-    import ctypes
-    import sys
-    if sys.platform.startswith('linux'):
-        try:
-            x11 = ctypes.cdll.LoadLibrary('libX11.so')
-            x11.XInitThreads()
-        except:
-            print("Warning: failed to XInitThreads()")
+# GNU Radio version: 3.10.9.2
 
 from PyQt5 import Qt
-from gnuradio import eng_notation
 from gnuradio import qtgui
-from gnuradio.filter import firdes
-import sip
+from gnuradio import eng_notation
 from gnuradio import gr
+from gnuradio.filter import firdes
 from gnuradio.fft import window
 import sys
 import signal
+from PyQt5 import Qt
 from argparse import ArgumentParser
 from gnuradio.eng_arg import eng_float, intx
 from gnuradio import krakensdr
+import sip
 
 
-
-from gnuradio import qtgui
 
 class kraken_fft_display(gr.top_block, Qt.QWidget):
 
@@ -46,8 +33,8 @@ class kraken_fft_display(gr.top_block, Qt.QWidget):
         qtgui.util.check_set_qss()
         try:
             self.setWindowIcon(Qt.QIcon.fromTheme('gnuradio-grc'))
-        except:
-            pass
+        except BaseException as exc:
+            print(f"Qt GUI: Could not set Icon: {str(exc)}", file=sys.stderr)
         self.top_scroll_layout = Qt.QVBoxLayout()
         self.setLayout(self.top_scroll_layout)
         self.top_scroll = Qt.QScrollArea()
@@ -63,12 +50,11 @@ class kraken_fft_display(gr.top_block, Qt.QWidget):
         self.settings = Qt.QSettings("GNU Radio", "kraken_fft_display")
 
         try:
-            if StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
-                self.restoreGeometry(self.settings.value("geometry").toByteArray())
-            else:
-                self.restoreGeometry(self.settings.value("geometry"))
-        except:
-            pass
+            geometry = self.settings.value("geometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+        except BaseException as exc:
+            print(f"Qt GUI: Could not restore geometry: {str(exc)}", file=sys.stderr)
 
         ##################################################
         # Variables
@@ -81,11 +67,12 @@ class kraken_fft_display(gr.top_block, Qt.QWidget):
         ##################################################
         # Blocks
         ##################################################
+
         self._gain_tool_bar = Qt.QToolBar(self)
         self._gain_tool_bar.addWidget(Qt.QLabel("Gain [0 - 49.6]" + ": "))
         self._gain_line_edit = Qt.QLineEdit(str(self.gain))
         self._gain_tool_bar.addWidget(self._gain_line_edit)
-        self._gain_line_edit.returnPressed.connect(
+        self._gain_line_edit.editingFinished.connect(
             lambda: self.set_gain(eng_notation.str_to_num(str(self._gain_line_edit.text()))))
         self.top_grid_layout.addWidget(self._gain_tool_bar, 0, 1, 1, 1)
         for r in range(0, 1):
@@ -96,7 +83,7 @@ class kraken_fft_display(gr.top_block, Qt.QWidget):
         self._freq_tool_bar.addWidget(Qt.QLabel("Center Frequency [MHz]" + ": "))
         self._freq_line_edit = Qt.QLineEdit(str(self.freq))
         self._freq_tool_bar.addWidget(self._freq_line_edit)
-        self._freq_line_edit.returnPressed.connect(
+        self._freq_line_edit.editingFinished.connect(
             lambda: self.set_freq(eng_notation.str_to_num(str(self._freq_line_edit.text()))))
         self.top_grid_layout.addWidget(self._freq_tool_bar, 0, 0, 1, 1)
         for r in range(0, 1):
@@ -277,9 +264,6 @@ class kraken_fft_display(gr.top_block, Qt.QWidget):
 
 def main(top_block_cls=kraken_fft_display, options=None):
 
-    if StrictVersion("4.5.0") <= StrictVersion(Qt.qVersion()) < StrictVersion("5.0.0"):
-        style = gr.prefs().get_string('qtgui', 'style', 'raster')
-        Qt.QApplication.setGraphicsSystem(style)
     qapp = Qt.QApplication(sys.argv)
 
     tb = top_block_cls()

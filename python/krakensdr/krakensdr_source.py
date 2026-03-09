@@ -42,27 +42,36 @@ class krakensdr_source(gr.sync_block):
 
         # Data Interface
         self.socket_inst = socket.socket()
+        self.socket_inst.settimeout(5.0)  # 5 second timeout to avoid blocking forever
         self.receiver_connection_status = False
         self.receiverBufferSize = 2 ** 18
 
         # Control interface
         self.ctr_iface_socket = socket.socket()
+        self.ctr_iface_socket.settimeout(5.0)
         self.ctr_iface_port = self.ctrlPort
         self.ctr_iface_thread_lock = Lock() # Used to synchronize the operation of the ctr_iface thread
 
         # Init cpi_len from heimdall header. Sometimes cpi_len is initially zero. If so, loop until we get a non-zero value
+        max_retries = 10
+        retries = 0
         self.get_iq_online()
-        while self.iq_header.cpi_length == 0: 
+        while self.iq_header.cpi_length == 0:
+            retries += 1
+            if retries >= max_retries:
+                print("KrakenSDR Source: Heimdall non raggiungibile dopo {:d} tentativi. Verificare che il server sia avviato su {}:{}".format(max_retries, self.ipAddr, self.port))
+                break
             self.get_iq_online()
-            
-        self.cpi_len = self.iq_header.cpi_length
-        self.total_fetched = self.iq_header.cpi_length
+
+        self.cpi_len = self.iq_header.cpi_length if self.iq_header.cpi_length > 0 else 2**18
+        self.total_fetched = self.cpi_len
 
         self.iq_samples = None
         self.iq_sample_queue = queue.Queue(10)
-        
+
         self.stop_threads = False
         self.buffer_thread = Thread(target = self.buffer_iq_samples)
+        self.buffer_thread.daemon = True  # Non blocca l'uscita del processo
         self.buffer_thread.start()
 
     '''
@@ -73,13 +82,22 @@ class krakensdr_source(gr.sync_block):
     def buffer_iq_samples(self):
         while(True):
 
-            if self.debug:
-                self.iq_header.dump_header()
-                
             if self.stop_threads: # Stop thread on close
                 return
-                
-            iq_samples = self.get_iq_online()
+
+            if self.debug:
+                self.iq_header.dump_header()
+
+            try:
+                iq_samples = self.get_iq_online()
+            except Exception as e:
+                if self.stop_threads:
+                    return
+                print("buffer_iq_samples: errore ricezione campioni IQ: " + str(e))
+                continue
+
+            if self.stop_threads:
+                return
 
             try:
                 if self.iq_header.frame_type == self.iq_header.FRAME_TYPE_DATA: # Only output DATA frames, not calibration frames
@@ -136,8 +154,8 @@ class krakensdr_source(gr.sync_block):
 
     def stop(self):
         self.stop_threads = True
-        self.buffer_thread.join()
-        self.eth_close()
+        self.eth_close()  # Chiude il socket prima, così recv_into() nel thread viene sbloccato
+        self.buffer_thread.join(timeout=5.0)
         return True
 
     def set_gain(self, gain):
