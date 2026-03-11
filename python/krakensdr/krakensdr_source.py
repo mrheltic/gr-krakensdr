@@ -67,6 +67,7 @@ class krakensdr_source(gr.sync_block):
         self.total_fetched = self.cpi_len
 
         self.iq_samples = None
+        self._iq_buf = None        # buffer locale in work(): isolato dal thread background
         self.iq_sample_queue = queue.Queue(10)
 
         self.stop_threads = False
@@ -104,7 +105,9 @@ class krakensdr_source(gr.sync_block):
                 return
 
             try:
-                if self.iq_header.frame_type == self.iq_header.FRAME_TYPE_DATA: # Only output DATA frames, not calibration frames
+                # Accoda solo frame DATA validi (non None, non interi di errore)
+                if isinstance(iq_samples, np.ndarray) \
+                        and self.iq_header.frame_type == self.iq_header.FRAME_TYPE_DATA:
                     self.iq_sample_queue.put_nowait(iq_samples)
             except Exception as e:
                 print("Failed to put IQ Samples into the Queue")
@@ -119,49 +122,53 @@ class krakensdr_source(gr.sync_block):
     '''
     def work(self, input_items, output_items):
 
-        # We need to fetch a new iq_samples buffer    
-        if self.total_fetched == self.cpi_len:   
-            '''
-            # Old non threaded way
-            self.iq_samples = self.get_iq_online()
-
-            if self.iq_header.frame_type != self.iq_header.FRAME_TYPE_DATA:
-                print("Not a data frame, skipping")
-                return 0
-            '''
-
+        # Quando l'intero frame è stato consegnato a GNURadio, prendi il prossimo
+        if self.total_fetched >= self.cpi_len:
             try:
-                # Timeout 15s: covers Heimdall FREQ/GAIN reconfig pauses (~5-10s).
-                # During reconfig, buffer_iq_samples receives calibration frames
-                # and does NOT put them in the queue → work() must wait patiently.
-                self.iq_samples = self.iq_sample_queue.get(True, 15)
+                # Timeout 15s: copre le pause di reconfig Heimdall (~5-10s).
+                new_buf = self.iq_sample_queue.get(True, 15)
                 self._consecutive_timeouts = 0
             except Exception:
                 self._consecutive_timeouts += 1
-                # Print only on 1st timeout and then every 5th to avoid spam
                 if self._consecutive_timeouts == 1 or self._consecutive_timeouts % 5 == 0:
                     print("[KrakenSDR] Waiting for IQ data (attempt {:d})...".format(
                           self._consecutive_timeouts))
                 return 0
 
+            # Valida il frame ricevuto (schermo contro frame malformati/None)
+            if not isinstance(new_buf, np.ndarray) or new_buf.ndim != 2 \
+                    or new_buf.shape[0] < self.numChannels or new_buf.shape[1] == 0:
+                return 0
+
+            # _iq_buf è un attributo PRIVATO di work(): il thread background non
+            # lo scrive mai (receive_iq_frame non tocca più self._iq_buf).
+            # In questo modo evitiamo la race condition che causava il broadcast error.
+            self._iq_buf = new_buf
+            self.cpi_len = new_buf.shape[1]   # aggiorna dalla dimensione reale del frame
             self.total_fetched = 0
 
-        fetch_left = self.cpi_len - self.total_fetched  # How much of the iq_samples buffer is left to stream out
-        output_items_req = len(output_items[0])  # Scheduler requests this many items out
-        output_items_now = min(output_items_req, fetch_left)  # We will output this many. Either the requested amount, or if we have less.
+        if self._iq_buf is None:
+            return 0
+
+        fetch_left = self._iq_buf.shape[1] - self.total_fetched
+        if fetch_left <= 0:
+            self.total_fetched = self.cpi_len   # forza re-fetch al prossimo ciclo
+            return 0
+
+        output_items_req = len(output_items[0])
+        output_items_now = min(output_items_req, fetch_left)
 
         try:
             for n in range(self.numChannels):
-                # Only write the section of iq_samples that we left to outputting
-                output_items[n][0:output_items_now] = self.iq_samples[n,self.total_fetched:self.total_fetched + output_items_now]
+                output_items[n][0:output_items_now] = \
+                    self._iq_buf[n, self.total_fetched:self.total_fetched + output_items_now]
         except Exception as e:
-                print("Failed to write output_items")
-                print("Exception: " + str(e))
-                return 0
+            print("Failed to write output_items")
+            print("Exception: " + str(e))
+            return 0
 
-        self.total_fetched = self.total_fetched + output_items_now
-
-        return output_items_now  # Output number of items
+        self.total_fetched += output_items_now
+        return output_items_now
 
     def stop(self):
         self.stop_threads = True
@@ -352,12 +359,14 @@ class krakensdr_source(gr.sync_block):
                 total_received_bytes += recv_bytes_count
 
             # Convert raw bytes to Complex float64 IQ samples
-            self.iq_samples = np.frombuffer(iq_data_bytes[0:total_bytes_to_receive], dtype=np.complex64).reshape(self.iq_header.active_ant_chs, self.iq_header.cpi_length)
+            # NON assegnare a self.iq_samples: il thread background non deve
+            # sovrascrivere il buffer usato da work() (race condition).
+            iq_samples = np.frombuffer(iq_data_bytes[0:total_bytes_to_receive], dtype=np.complex64).reshape(self.iq_header.active_ant_chs, self.iq_header.cpi_length)
 
             self.iq_frame_bytes =  bytearray()+iq_header_bytes+iq_data_bytes
-            return self.iq_samples
+            return iq_samples
         else:
-             return 0
+             return None
 
     def eth_close(self):
         """
