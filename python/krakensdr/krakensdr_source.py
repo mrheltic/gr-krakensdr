@@ -73,6 +73,7 @@ class krakensdr_source(gr.sync_block):
         self.buffer_thread = Thread(target = self.buffer_iq_samples)
         self.buffer_thread.daemon = True  # Non blocca l'uscita del processo
         self.buffer_thread.start()
+        self._consecutive_timeouts = 0  # suppresses work() spam during reconfig
 
     '''
     Continuously receive sample frames from heimdall and put into a buffer.
@@ -94,6 +95,9 @@ class krakensdr_source(gr.sync_block):
                 if self.stop_threads:
                     return
                 print("buffer_iq_samples: errore ricezione campioni IQ: " + str(e))
+                # Reset so get_iq_online() reconnects on next iteration
+                self.receiver_connection_status = False
+                import time; time.sleep(1)
                 continue
 
             if self.stop_threads:
@@ -127,10 +131,17 @@ class krakensdr_source(gr.sync_block):
             '''
 
             try:
-                self.iq_samples = self.iq_sample_queue.get(True, 3) # Block until samples are ready
-            except Exception as e:
-                print("Failed to get IQ Samples")
-                print("Exception: " + str(e))
+                # Timeout 15s: covers Heimdall FREQ/GAIN reconfig pauses (~5-10s).
+                # During reconfig, buffer_iq_samples receives calibration frames
+                # and does NOT put them in the queue → work() must wait patiently.
+                self.iq_samples = self.iq_sample_queue.get(True, 15)
+                self._consecutive_timeouts = 0
+            except Exception:
+                self._consecutive_timeouts += 1
+                # Print only on 1st timeout and then every 5th to avoid spam
+                if self._consecutive_timeouts == 1 or self._consecutive_timeouts % 5 == 0:
+                    print("[KrakenSDR] Waiting for IQ data (attempt {:d})...".format(
+                          self._consecutive_timeouts))
                 return 0
 
             self.total_fetched = 0
@@ -312,6 +323,8 @@ class krakensdr_source(gr.sync_block):
         while total_received_bytes < self.iq_header.header_size:
             # Receive into buffer
             recv_bytes_count = self.socket_inst.recv_into(view, self.iq_header.header_size-total_received_bytes)
+            if recv_bytes_count == 0:
+                raise ConnectionError("IQ socket closed by server during header receive")
             view = view[recv_bytes_count:]  # reset memory region
             total_received_bytes += recv_bytes_count
 
@@ -333,6 +346,8 @@ class krakensdr_source(gr.sync_block):
             while total_received_bytes < total_bytes_to_receive:
                 # Receive into buffer
                 recv_bytes_count = self.socket_inst.recv_into(view, receiver_buffer_size)
+                if recv_bytes_count == 0:
+                    raise ConnectionError("IQ socket closed by server during payload receive")
                 view = view[recv_bytes_count:]  # reset memory region
                 total_received_bytes += recv_bytes_count
 

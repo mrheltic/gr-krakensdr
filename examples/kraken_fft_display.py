@@ -8,6 +8,20 @@
 # Title: Not titled yet
 # GNU Radio version: 3.10.9.2
 
+# XInitThreads MUST be called before any X11/PyQt5 import.
+# On Ubuntu 22.04 the bare 'libX11.so' symlink is absent without libx11-dev;
+# use ctypes.util.find_library() which resolves the versioned name correctly.
+import ctypes
+import ctypes.util
+import sys
+if sys.platform.startswith('linux'):
+    try:
+        _libX11 = ctypes.util.find_library('X11')
+        if _libX11:
+            ctypes.cdll.LoadLibrary(_libX11).XInitThreads()
+    except Exception:
+        pass
+
 from PyQt5 import Qt
 from gnuradio import qtgui
 from gnuradio import eng_notation
