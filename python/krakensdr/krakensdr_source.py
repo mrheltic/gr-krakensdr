@@ -71,6 +71,7 @@ class krakensdr_source(gr.sync_block):
         self.iq_sample_queue = queue.Queue(10)
 
         self.stop_threads = False
+        self._diag_frame_ctr = 0   # diagnostica frame-type in buffer_iq_samples
         self.buffer_thread = Thread(target = self.buffer_iq_samples)
         self.buffer_thread.daemon = True  # Non blocca l'uscita del processo
         self.buffer_thread.start()
@@ -109,6 +110,17 @@ class krakensdr_source(gr.sync_block):
                 if isinstance(iq_samples, np.ndarray) \
                         and self.iq_header.frame_type == self.iq_header.FRAME_TYPE_DATA:
                     self.iq_sample_queue.put_nowait(iq_samples)
+                # Diagnostica: ogni 20 frame mostra tipo e sync_state
+                self._diag_frame_ctr += 1
+                if self._diag_frame_ctr % 20 == 1:
+                    _ft = {0:'DATA', 1:'DUMMY', 2:'RAMP', 3:'CAL', 4:'TRIGW'}
+                    _name = _ft.get(self.iq_header.frame_type, str(self.iq_header.frame_type))
+                    print("[KrakenSDR diag] frame #{:d}: type={:s}, sync_state={:d}, "
+                          "noise_src={:d}, cpi={:d}".format(
+                              self._diag_frame_ctr, _name,
+                              self.iq_header.sync_state,
+                              self.iq_header.noise_source_state,
+                              self.iq_header.cpi_length), flush=True)
             except Exception as e:
                 print("Failed to put IQ Samples into the Queue")
                 print("Exception: " + str(e))
