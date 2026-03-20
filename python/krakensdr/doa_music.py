@@ -17,7 +17,7 @@ class doa_music(gr.sync_block):
     """
     docstring for block doa_music
     """
-    def __init__(self, vec_len=1048576, freq=433.0, array_dist=0.33, num_elements=5, array_type='UCA'):
+    def __init__(self, vec_len=1048576, freq=433.0, array_dist=0.33, num_elements=5, array_type='UCA', signal_dimension=1):
         gr.sync_block.__init__(self,
             name="DOA MUSIC",
             in_sig=[(np.complex64, vec_len)] * num_elements,
@@ -28,6 +28,7 @@ class doa_music(gr.sync_block):
         self.array_dist = array_dist
         self.num_elements = num_elements
         self.array_type = array_type
+        self.signal_dimension = signal_dimension
 
         wavelength = 300 / freq
         if array_type == 'UCA':
@@ -39,21 +40,54 @@ class doa_music(gr.sync_block):
         self.scanning_vectors = self.gen_scanning_vectors(self.num_elements, wavelength_mult, self.array_type, 0)
 
         print("wavelength mult: " + str(wavelength_mult))
+
+        # Pre-allocate the signal matrix reused every CPI to avoid per-call allocation.
+        self._processed_signal = np.empty((num_elements, vec_len), dtype=np.complex64)
+
+    # ── Private helper ──────────────────────────────────────────────────────
+    def _calc_wavelength_mult(self):
+        """Return the normalised inter-element spacing d/λ."""
+        wavelength = 300.0 / self.freq  # freq in MHz → λ in meters
+        if self.array_type == 'UCA':
+            inter_elem_spacing = (np.sqrt(2) * self.array_dist
+                                  * np.sqrt(1 - np.cos(np.deg2rad(360.0 / self.num_elements))))
+            return inter_elem_spacing / wavelength
+        else:  # ULA
+            return self.array_dist / wavelength
+
+    def _rebuild_scanning_vectors(self):
+        wavelength_mult = self._calc_wavelength_mult()
+        self.scanning_vectors = self.gen_scanning_vectors(
+            self.num_elements, wavelength_mult, self.array_type, 0)
+
+    # ── Runtime setters (called by GNU Radio flowgraph variable callbacks) ──
+    def set_freq(self, freq):
+        """Update the centre frequency [MHz] and recompute scanning vectors."""
+        self.freq = freq
+        self._rebuild_scanning_vectors()
+
+    def set_array_dist(self, array_dist):
+        """Update the antenna spacing [m] and recompute scanning vectors."""
+        self.array_dist = array_dist
+        self._rebuild_scanning_vectors()
+
+    def set_signal_dimension(self, signal_dimension):
+        """Update the number of expected coherent sources (1 = single dominant source)."""
+        self.signal_dimension = max(1, min(int(signal_dimension), self.num_elements - 1))
         
     def work(self, input_items, output_items):
 
         #print("input items size: " + str(np.shape(input_items)))
-        processed_signal = np.empty((self.num_elements, self.cpi_size), dtype=np.complex64)
-
+        # Reuse pre-allocated matrix; avoids a fresh np.empty each CPI.
         for i in range(self.num_elements):
-            processed_signal[i, :] = input_items[i][0][:]
+            self._processed_signal[i, :] = input_items[i][0]
 
         #decimated_processed_signal = signal.decimate(processed_signal, 100, n=100 * 2, ftype='fir')
         # Doing decimation in GNU Radio blocks, or uncomment to do decimation in scipy
-        decimated_processed_signal = processed_signal
+        decimated_processed_signal = self._processed_signal
        
         R = self.corr_matrix(decimated_processed_signal)
-        DOA_MUSIC_res = self.DOA_MUSIC(R, self.scanning_vectors, signal_dimension=1)
+        DOA_MUSIC_res = self.DOA_MUSIC(R, self.scanning_vectors, signal_dimension=self.signal_dimension)
         doa_plot = self.DOA_plot_util(DOA_MUSIC_res)
         output_items[0][0][:] = doa_plot
                        
@@ -64,6 +98,13 @@ class doa_music(gr.sync_block):
         N = X[0, :].size
         R = np.dot(X, X.conj().T)
         R = np.divide(R, N)
+        # Forward-backward spatial averaging: decorrelates coherent multipath.
+        # For centrosymmetric arrays (UCA, ULA) the exchange matrix J reverses
+        # element order; R_fb has the same noise subspace but reduced coherence
+        # between direct path and reflections.  Cost: one matrix multiply + conj.
+        M = R.shape[0]
+        J = np.eye(M, dtype=R.dtype)[::-1]   # anti-identity (exchange matrix)
+        R = 0.5 * (R + J @ R.conj() @ J)
         return R
 
 

@@ -4,7 +4,7 @@ category: '[KrakenSDR]'
 
 templates:
   imports: from gnuradio import krakensdr
-  make: krakensdr.krakensdr_correlator(${vec_len}, ${fft_cut})
+  make: krakensdr.krakensdr_correlator(${vec_len}, ${fft_cut}, ${ema_alpha})
 
 #  Make one 'parameters' list entry for every parameter you want settable from the GUI.
 #     Keys include:
@@ -21,6 +21,10 @@ parameters:
   label: Output FFT Size
   dtype: int
   default: 2048
+- id: ema_alpha
+  label: EMA smoothing (0.05 = very stable, 0.2 = fast)
+  dtype: real
+  default: 0.1
 #- id: ...
 #  label: ...
 #  dtype: ...

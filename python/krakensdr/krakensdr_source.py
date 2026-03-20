@@ -370,12 +370,17 @@ class krakensdr_source(gr.sync_block):
                 view = view[recv_bytes_count:]  # reset memory region
                 total_received_bytes += recv_bytes_count
 
-            # Convert raw bytes to Complex float64 IQ samples
-            # NON assegnare a self.iq_samples: il thread background non deve
-            # sovrascrivere il buffer usato da work() (race condition).
-            iq_samples = np.frombuffer(iq_data_bytes[0:total_bytes_to_receive], dtype=np.complex64).reshape(self.iq_header.active_ant_chs, self.iq_header.cpi_length)
+            # Build the numpy array directly from the receive buffer using count=
+            # to skip the payload slice (avoids a 2 MB bytearray copy).
+            # .copy() decouples the array from iq_data_bytes so the 2.25 MB
+            # bytearray is freed when this function returns.
+            count = self.iq_header.active_ant_chs * self.iq_header.cpi_length
+            iq_samples = (
+                np.frombuffer(iq_data_bytes, dtype=np.complex64, count=count)
+                .reshape(self.iq_header.active_ant_chs, self.iq_header.cpi_length)
+                .copy()
+            )
 
-            self.iq_frame_bytes =  bytearray()+iq_header_bytes+iq_data_bytes
             return iq_samples
         else:
              return None

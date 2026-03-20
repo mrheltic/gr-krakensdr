@@ -4,7 +4,7 @@ category: '[KrakenSDR]'
 
 templates:
   imports: from gnuradio import krakensdr
-  make: krakensdr.doa_music(${vec_len}, ${freq}, ${array_dist}, ${num_elements}, ${array_type})
+  make: krakensdr.doa_music(${vec_len}, ${freq}, ${array_dist}, ${num_elements}, ${array_type}, ${signal_dimension})
 
 #  Make one 'parameters' list entry for every parameter you want settable from the GUI.
 #     Keys include:
@@ -33,9 +33,18 @@ parameters:
   label: Array Type (UCA or ULA)
   dtype: string
   default: 'UCA'
+- id: signal_dimension
+  label: Signal dimension (1=single source, 2+=multipath/reflections)
+  dtype: int
+  default: 1
 #- id: ...
 #  label: ...
 #  dtype: ...
+
+callbacks:
+- set_freq(${freq})
+- set_array_dist(${array_dist})
+- set_signal_dimension(${signal_dimension})
 
 #  Make one 'inputs' list entry per input and one 'outputs' list entry per output.
 #  Keys include:
