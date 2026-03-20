@@ -22,7 +22,7 @@ except ModuleNotFoundError:
 # import any pure python here
 from .krakensdr_source import krakensdr_source
 from .krakensdr_correlator import krakensdr_correlator
-from .doa_music import doa_music
+from .doa_music import doa_music, music_doa_block
 
 
 #

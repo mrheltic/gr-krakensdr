@@ -178,4 +178,100 @@ class doa_music(gr.sync_block):
                 DOA_data[i] = log_scale_min
 
         return DOA_data
-        
+
+
+# =============================================================================
+#  music_doa_block
+#  A self-contained MUSIC DoA estimator for Uniform Circular Arrays (UCA).
+#
+#  Input:  M streams of np.complex64 IQ samples (one per antenna).
+#  Output: 1 stream of np.float32, one value per CPI = the peak bearing [deg].
+#
+#  The block is a decimator: it consumes `num_snapshots` input samples per
+#  output sample, so the output rate = input_rate / num_snapshots.
+#
+#  Steering vector formula (UCA):
+#    a(θ) = exp( j·2π·r·cos(θ − φ_m) )   m = 0..M-1
+#  where r is the array radius in units of wavelength, and
+#        φ_m = 2π·m/M is the angular position of the m-th element.
+# =============================================================================
+class music_doa_block(gr.decim_block):
+    """
+    MUSIC DoA estimator for a Uniform Circular Array (UCA).
+    Accepts M complex IQ input streams and outputs one bearing angle per CPI.
+    """
+
+    def __init__(self, num_antennas=3, radius_lambda=0.5,
+                 num_snapshots=1024, num_signals=1):
+        gr.decim_block.__init__(
+            self,
+            name='MUSIC DoA Estimator',
+            in_sig=[np.complex64] * num_antennas,
+            out_sig=[np.float32],
+            decimation=num_snapshots,
+        )
+
+        self.M = num_antennas
+        self.r = radius_lambda
+        self.D = max(1, min(int(num_signals), num_antennas - 1))
+
+        # Angular search grid: 0..359 degrees, 1-degree resolution
+        self.theta_range = np.arange(0, 360, 1)
+        theta_rad = np.radians(self.theta_range)
+
+        # Angular positions of the M antenna elements on the circle
+        phi_m = np.arange(self.M) * 2.0 * np.pi / self.M   # shape (M,)
+
+        # Pre-compute the steering matrix A_search: shape (M, 360)
+        # a[:,k] = steering vector for look-angle theta_range[k]
+        phase = 2.0 * np.pi * self.r * np.cos(
+            theta_rad[np.newaxis, :] - phi_m[:, np.newaxis])  # (M, 360)
+        self.A_search = np.exp(1j * phase).astype(np.complex64)
+
+    # ── runtime setters ───────────────────────────────────────────────────────
+    def set_radius_lambda(self, r):
+        """Update array radius [wavelengths] and rebuild steering matrix."""
+        self.r = r
+        phi_m = np.arange(self.M) * 2.0 * np.pi / self.M
+        theta_rad = np.radians(self.theta_range)
+        phase = 2.0 * np.pi * self.r * np.cos(
+            theta_rad[np.newaxis, :] - phi_m[:, np.newaxis])
+        self.A_search = np.exp(1j * phase).astype(np.complex64)
+
+    def set_num_signals(self, d):
+        """Update the number of expected coherent sources."""
+        self.D = max(1, min(int(d), self.M - 1))
+
+    # ── GNU Radio work() ─────────────────────────────────────────────────────
+    def work(self, input_items, output_items):
+        n_out = len(output_items[0])
+        N = self.decimation()   # snapshots per CPI
+
+        for i in range(n_out):
+            # Build snapshot matrix X: shape (M, N)
+            X = np.empty((self.M, N), dtype=np.complex64)
+            for m in range(self.M):
+                X[m, :] = input_items[m][i * N: (i + 1) * N]
+
+            # 1. Sample covariance matrix R = X·X^H / N
+            R = (X @ X.conj().T) / N
+
+            # 2. Eigendecomposition (eigh: guaranteed real eigenvalues for
+            #    Hermitian matrices, returns eigenvectors sorted ascending)
+            _, eigvecs = np.linalg.eigh(R)
+
+            # 3. Noise subspace: first (M - D) eigenvectors (smallest eigenvalues)
+            Un = eigvecs[:, : self.M - self.D]          # (M, M-D)
+            Un_UnH = Un @ Un.conj().T                   # (M, M)
+
+            # 4. MUSIC pseudo-spectrum (vectorised over all angles at once)
+            #    P[k] = 1 / |a_k^H · Un_UnH · a_k|
+            #    a_k^H · Un_UnH · a_k  = sum_j |( Un^H · a_k )[j]|^2
+            proj = Un.conj().T @ self.A_search          # (M-D, 360)
+            den = np.sum(np.abs(proj) ** 2, axis=0)     # (360,)
+            P_music = 1.0 / (den + 1e-12)
+
+            # 5. Peak bearing
+            output_items[0][i] = float(self.theta_range[np.argmax(P_music)])
+
+        return n_out
