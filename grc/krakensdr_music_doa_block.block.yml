@@ -1,0 +1,59 @@
+id: krakensdr_music_doa_block
+label: MUSIC DoA Block
+category: '[KrakenSDR]'
+
+templates:
+  imports: from gnuradio import krakensdr
+  make: krakensdr.music_doa_block(${num_antennas}, ${radius_lambda}, ${num_snapshots}, ${num_signals})
+
+parameters:
+- id: num_antennas
+  label: Number of Antennas
+  dtype: int
+  default: 3
+- id: radius_lambda
+  label: UCA Radius [wavelengths]
+  dtype: real
+  default: 0.5
+- id: num_snapshots
+  label: Snapshots per CPI
+  dtype: int
+  default: 1024
+- id: num_signals
+  label: Number of Signals (D)
+  dtype: int
+  default: 1
+
+callbacks:
+- set_radius_lambda(${radius_lambda})
+- set_num_signals(${num_signals})
+
+inputs:
+- label: ch_
+  domain: stream
+  dtype: complex
+  multiplicity: ${num_antennas}
+
+outputs:
+- label: bearing
+  domain: stream
+  dtype: float
+
+documentation: |-
+  MUSIC Direction of Arrival estimator for a Uniform Circular Array (UCA).
+
+  Consumes `Snapshots per CPI` complex IQ samples per input stream to produce
+  one float output per CPI: the estimated bearing angle in degrees (0–359).
+
+  Parameters:
+    Number of Antennas  – number of complex input streams (matches KrakenSDR channels)
+    UCA Radius          – array radius in wavelengths (λ).
+                          For a 15 cm radius at 433 MHz: r = 0.15 / (3e8/433e6) ≈ 0.217
+    Snapshots per CPI   – block size; also sets the decimation ratio
+    Number of Signals   – coherent sources to estimate (default 1)
+
+  Connect N krakensdr_source outputs directly to the N inputs of this block,
+  then connect the single float output to a Number Sink or QT GUI Number Sink
+  to display the live bearing.
+
+file_format: 1
